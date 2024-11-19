@@ -37,15 +37,22 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+import com.github.packageurl.MalformedPackageURLException;
+import com.github.packageurl.PackageURL;
+import com.redhat.red.build.koji.model.xmlrpc.KojiIdOrName;
+import com.redhat.red.build.koji.model.xmlrpc.KojiRpmInfo;
+import jakarta.inject.Inject;
 import org.cyclonedx.model.Bom;
 import org.cyclonedx.model.Component;
 import org.cyclonedx.model.ExternalReference;
 import org.cyclonedx.model.Hash;
 import org.cyclonedx.model.Property;
+import org.jboss.pnc.build.finder.koji.ClientSession;
 import org.jboss.pnc.build.finder.koji.KojiBuild;
 import org.jboss.pnc.dto.Artifact;
 import org.jboss.sbomer.cli.feature.sbom.adjuster.PncBuildAdjuster;
 import org.jboss.sbomer.cli.feature.sbom.service.KojiService;
+import org.jboss.sbomer.core.errors.ApplicationException;
 import org.jboss.sbomer.core.features.sbom.enums.ProcessorType;
 import org.jboss.sbomer.core.features.sbom.utils.RhVersionPattern;
 import org.jboss.sbomer.core.features.sbom.utils.SbomUtils;
@@ -62,6 +69,9 @@ public class DefaultProcessor implements Processor {
     protected PncService pncService;
 
     protected KojiService kojiService;
+
+    @Inject
+    ClientSession kojiSession;
 
     public DefaultProcessor(PncService pncService, KojiService kojiService) {
         this.pncService = pncService;
@@ -119,12 +129,41 @@ public class DefaultProcessor implements Processor {
                     // Let's try a lookup with hashes only, because the generated purl can be wrongly constructed
                     artifact = pncService.getArtifact(null, sha256, sha1, md5);
                 }
+                if (artifact == null) {
+                    PackageURL purl;
+                    try {
+                        purl = new PackageURL(component.getPurl());
+                    } catch (MalformedPackageURLException e) {
+                        throw new ApplicationException("Unable to parse provided purl: '{}'", component.getPurl(), e);
+                    }
+                    if("rpm".equals(purl.getType())){
+                        String arch = purl.getQualifiers().get("arch");
+                        if(arch == null){
+                            log.debug("RPM purl is missing arch qualifier: " + component.getPurl());
+                        }else {
+                            String nvra = purl.getName() + "-" + purl.getVersion() + "." + arch;
+                            try {
+                                List<KojiRpmInfo> rpm = kojiSession.getRPM(List.of(new KojiIdOrName(nvra)));
+                                for (KojiRpmInfo kojiRpmInfo : rpm) {
+                                    kojiRpmInfo.
+                                }
+                            } catch (KojiClientException e) {
+                                throw new ApplicationException("Exception when trying to get RPM info from Koji: '{}'", component.getPurl(), e);
+                            }
+                        }
+                    }
+                }
 
                 // No luck, let's try to see if we can find hashes in build-meta external references
                 if (artifact == null) {
                     log.debug(
                             "Artifact with purl '{}' wasn't found in PNC using hash-only lookup, giving up",
                             component.getPurl());
+
+
+
+                    kojiSession.getRPM()
+
                     return;
                 }
 
